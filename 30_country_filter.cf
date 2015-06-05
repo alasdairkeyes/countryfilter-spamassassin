@@ -1,0 +1,24 @@
+loadplugin Mail::SpamAssassin::Plugin::CountryFilter CountryFilter Mail::SpamAssassin::Plugin::CountryFilter.pm
+
+# Example country codes are not in general use, no countries are whitelisted
+# or blacklisted by default in this config file
+
+header      BLACKLIST_RELAY_COUNTRY eval:blacklist_relay_country_check()
+score       BLACKLIST_RELAY_COUNTRY 1.0
+describe    BLACKLIST_RELAY_COUNTRY Email was relayed through a country in config blacklist
+blacklist_relay_country_codes       XA,XB
+
+header      WHITELIST_RELAY_COUNTRY eval:whitelist_relay_country_check()
+score       WHITELIST_RELAY_COUNTRY -1.0
+describe    WHITELIST_RELAY_COUNTRY Email was relayed through a country in config whitelist
+whitelist_relay_country_codes       XC,XD
+
+header      BLACKLIST_SOURCE_COUNTRY eval:blacklist_source_country_check()
+score       BLACKLIST_SOURCE_COUNTRY 1.0
+describe    BLACKLIST_SOURCE_COUNTRY Source IP was from a country in config blacklist
+blacklist_source_country_codes       XE,XF
+
+header      WHITELIST_SOURCE_COUNTRY eval:whitelist_source_country_check()
+score       WHITELIST_SOURCE_COUNTRY -1.0
+describe    WHITELIST_SOURCE_COUNTRY Source IP was from a country in config whitelist
+whitelist_source_country_codes       XG,XH
