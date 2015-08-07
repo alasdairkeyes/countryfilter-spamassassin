@@ -177,6 +177,10 @@ my $config_key = "country_filter";
 
         my @matches;
         foreach my $ip (@ips) {
+
+            # When lint mode is run or SA is started up, this will be undefined, catch it
+            next unless defined($ip);
+
             if (my $country = $geo_ip->country_code_by_addr($ip)) {
                 dbg("IP $ip maps to country code $country");
                 push(@matches,"$ip|$country")
