@@ -22,7 +22,7 @@ Mail::SpamAssassin::Plugin::CountryFilter - CountryFilter plugin
 
 =head1 REVISION
 
-  Revision: 0.01 
+  Revision: 0.02 
 
 =head1 DESCRIPTION
 
@@ -55,6 +55,7 @@ use Mail::SpamAssassin::Constants qw(:ip);
 our @ISA = qw(Mail::SpamAssassin::Plugin);
  
 use Geo::IP;
+use Net::IP;
 
 my $config_key = "country_filter";
 
@@ -144,8 +145,8 @@ my $config_key = "country_filter";
     }
 
 
-
-
+    # Override standard debug method by prepending it with $config_key for easier
+    # checking in the logs
     sub dbg {
         my @message = @_;
         Mail::SpamAssassin::Plugin::dbg($config_key .': ' . (join(' ',@_) || '-'));
@@ -153,27 +154,71 @@ my $config_key = "country_filter";
 
 
 
+    sub _ip_to_country_code {
+        my $self    = shift;
+        my $ip      = shift;
 
-    sub _geo_ip {
-        # This instantiation Geo::IP once for every call of _geo_ip() function
-        my $geo_ip = eval {
-            # Slower than using cached version but this will reload latest Geo::IP data
-            Geo::IP->new(GEOIP_STANDARD)
-        };
-        if (!$geo_ip || $@) {
-            dbg("Failed to instantiate Geo::IP: " , $@);
-        };
+        # Load Net::IP object, and check version
+        my $net_ip = Net::IP->new($ip)
+            || do {
+                dbg("Failed to load Net::IP for ip '$ip'");
+                return;
+            };
 
-        return $geo_ip;
+        my $ip_version = $net_ip->version;
+        if (! grep { $ip_version eq $_ } qw/ 4 6 /) {
+            dbg("Invalid IP version '$ip_version' to load Geo::IP");
+            return;
+        }
+
+
+        # Get the Database file for this IP version
+        my $db_file = $self->{ main }{ conf }{ $config_key }{ join('', 'geoip_ipv', $ip_version, '_database') }
+            || '';
+
+        # Load up suitable Geo::IP object
+        my $geo_ip;
+        if ($db_file) {
+            $geo_ip = eval {
+                Geo::IP->open($db_file, GEOIP_STANDARD);
+            } || do {
+                dbg("Failed to instantiate Geo::IP v$ip_version with '$db_file': " , $@);
+                return;
+            };
+        } else {
+            if ($ip_version == 4) {
+                $geo_ip = eval {
+                    Geo::IP->new(GEOIP_STANDARD)
+                } || dbg("Failed to instantiate Geo::IP v$ip_version: " , $@);
+            } else {
+                dbg("Failed to instantiate Geo::IP v$ip_version: No Database file");
+                return;
+            }
+        }
+
+        # Get right function to call
+        my $function = "country_code_by_addr";
+        $function .= '_v6'
+            if ($ip_version == 6);
+      
+ 
+        # Get country code
+        if (my $country = $geo_ip->$function($ip)) {
+            dbg("IP $ip maps to country code $country");
+            return $country;
+        } else {
+            dbg("Failed to map " . ($ip || '-') . " to country code - No Data in GeoIP");
+        }
+
+        return;
     }
 
 
-    sub _check_ip_country_codes {
-        my $country_codes = shift;
-        my @ips = @_;
 
-        my $geo_ip = _geo_ip()
-            || return;
+    sub _check_ip_country_codes {
+        my $self            = shift;
+        my $country_codes   = shift;
+        my @ips             = @_;
 
         my @matches;
         foreach my $ip (@ips) {
@@ -181,12 +226,9 @@ my $config_key = "country_filter";
             # When lint mode is run or SA is started up, this will be undefined, catch it
             next unless defined($ip);
 
-            if (my $country = $geo_ip->country_code_by_addr($ip)) {
-                dbg("IP $ip maps to country code $country");
+            if (my $country = $self->_ip_to_country_code($ip)) {
                 push(@matches,"$ip|$country")
                     if ($country_codes->{ $country });
-            } else {
-                dbg("Failed to map " . ($ip || '-') . " to country code - No Data in GeoIP");
             }
         }
 
@@ -198,17 +240,24 @@ my $config_key = "country_filter";
     sub parse_config {
         my ($self, $opts) = @_;
 
-        foreach my $option_key (qw/ blacklist_relay_country_codes whitelist_relay_country_codes blacklist_source_country_codes whitelist_source_country_codes /) {
+        foreach my $option_key (qw/ blacklist_relay_country_codes whitelist_relay_country_codes blacklist_source_country_codes whitelist_source_country_codes geoip_ipv4_database geoip_ipv6_database /) {
             if ($opts->{key} eq $option_key) {
 
                 dbg("Loading " . ($opts->{ user_config } ? "user" : "global" ) . "_config for $option_key");
 
                 my $values_string = $opts->{ value };
-                my $country_codes = _clean_and_split_codes($values_string);
-                dbg("$option_key loaded as " . join(',',keys(%$country_codes)));
+
+                my $value;
+                if ($option_key =~ /_country_codes$/) {
+                    $value = _clean_and_split_codes($values_string);
+                    dbg("$option_key loaded as " . join(',',keys(%$value)));
+                } else {
+                    $value = $values_string;
+                    dbg("$option_key loaded as " . $value);
+                }
 
                 # Store
-                $self->{ main }{ conf }{ $config_key }{ $option_key } = $country_codes;
+                $self->{ main }{ conf }{ $config_key }{ $option_key } = $value;
 
                 # Inform SA, we handle this option
                 $self->inhibit_further_callbacks();
@@ -230,7 +279,7 @@ my $config_key = "country_filter";
         my $source_public_ip = _get_source_public_ip($pms);
         dbg("Checking Source IP " . ($source_public_ip || '-') . " against blacklist countries " . join(',',keys(%$country_codes)));
 
-        my @matches = _check_ip_country_codes($country_codes, $source_public_ip);
+        my @matches = $self->_check_ip_country_codes($country_codes, $source_public_ip);
         
         return 1
             if (scalar(@matches)); 
@@ -248,7 +297,7 @@ my $config_key = "country_filter";
         my $source_public_ip = _get_source_public_ip($pms);
         dbg("Checking Source IP " . ($source_public_ip || '-') . " against whitelist countries " . join(',',keys(%$country_codes)));
 
-        my @matches = _check_ip_country_codes($country_codes, $source_public_ip);
+        my @matches = $self->_check_ip_country_codes($country_codes, $source_public_ip);
         
         return 1
             if (scalar(@matches)); 
@@ -267,7 +316,7 @@ my $config_key = "country_filter";
        
         dbg("Checking Relay IPs " . join(', ', @relay_ips) . " against blacklist countries " . join(',',keys(%$country_codes)));
        
-        my @matches = _check_ip_country_codes($country_codes, @relay_ips);
+        my @matches = $self->_check_ip_country_codes($country_codes, @relay_ips);
         
         return 1
             if (scalar(@matches)); 
@@ -286,7 +335,7 @@ my $config_key = "country_filter";
        
         dbg("Checking Relay IPs " . join(', ', @relay_ips) . " against whitelist countries " . join(',',keys(%$country_codes)));
        
-        my @matches = _check_ip_country_codes($country_codes, @relay_ips);
+        my @matches = $self->_check_ip_country_codes($country_codes, @relay_ips);
         
         return 1
             if (scalar(@matches)); 
@@ -375,9 +424,10 @@ my $config_key = "country_filter";
 
   Returns IP address as scalar
 
-=item B<_geo_ip()>
+=item B<_ip_to_country_code( $ip )>
 
-  Instantiates and returns a Geo::IP object
+  Checks IP version, creates Geo::IP object with the database for
+  that version and gets the Country Code
 
 =item B<_check_ip_country_codes( \%country_codes, @ip_addresses )>
 

@@ -1,4 +1,11 @@
-loadplugin Mail::SpamAssassin::Plugin::CountryFilter CountryFilter Mail::SpamAssassin::Plugin::CountryFilter.pm
+loadplugin Mail::SpamAssassin::Plugin::CountryFilter
+
+# Location of GeoIP IPv4 database - Not required, but recommended
+#geoip_ipv4_database                 /usr/share/GeoIP/GeoIP.dat
+
+# Location of GeoIP IPv6 database - Required for IPv6 mapping
+#geoip_ipv6_database                 /usr/share/GeoIP/GeoIPv6.dat
+
 
 # Example country codes are not in general use, no countries are whitelisted
 # or blacklisted by default in this config file
